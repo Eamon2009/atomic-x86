@@ -1,0 +1,223 @@
+Helium-x86
+==================
+
+This is the source tree for mini-kernel or helium-x86, a minimal x86 operating system
+kernel written in C and NASM assembly. I build this as a
+experiment for my first old PC to learn low-level systems programming.
+Built without any standard library, operating system support, or external
+dependencies - just a cross-compiler, an assembler, and metal.
+
+Target: i686 (32-bit x86), Multiboot 1, ELF binary, loaded at physical
+address 0x100000.
+
+
+Overview
+--------
+
+mini-kernel boots via GRUB (Multiboot 1), enters 32-bit protected mode,
+and initialises a complete foundational kernel layer:
+
+  Boot    - GRUB multiboot header, stack setup, ISR/IRQ assembly stubs
+  CPU     - GDT flat model, IDT with 256 gates, exception + hardware IRQ dispatch
+  Drivers - VGA text output, PS/2 keyboard (IRQ 1), PIT timer at 100 Hz (IRQ 0)
+  Memory  - Bitmap physical frame allocator, identity-mapped paging, kernel heap
+  Library - memset/memcpy/strcmp, kprintf with %c %s %d %u %x %p, port I/O
+  Shell   - Interactive command interface - help, mem, uptime, echo, color,
+            reboot and more
+
+The kernel is entirely interrupt-driven after init. After boot it drops into
+an interactive shell - type commands and the kernel responds in real time.
+
+
+Subsystems
+----------
+
+Boot - boot.asm places the Multiboot 1 magic header (0x1BADB002) so GRUB
+can find it in the first 8 KB. It sets up a 16 KB stack in .bss and calls
+kernel_main(uint32_t magic, multiboot_info_t *mbi). kernel_entry.asm holds
+the ISR and IRQ assembly stubs that save registers and call C handlers.
+
+CPU - gdt.c sets up a flat 4 GB segment model. idt.c installs 256 interrupt
+gates. isr.c handles CPU exceptions (vectors 0–31). irq.c remaps the 8259
+PIC so IRQ 0–15 map to vectors 32-47 and sends EOI after each handler.
+panic.c paints the screen red, dumps registers, and halts on fatal errors.
+
+Drivers - vga.c writes directly to the framebuffer at 0xB8000. keyboard.c
+decodes PS/2 scan codes on IRQ 1 into a ring buffer. timer.c programs the
+PIT at 100 Hz and provides timer_sleep() in milliseconds.
+
+Memory - pmm.c uses a bitmap to track 4 KB physical frames, parsed from the
+GRUB memory map. paging.c identity-maps the first 4 MB and enables paging.
+kmalloc.c provides a bump-pointer + free-list heap from 0x400000 to 0x800000.
+
+Library - string.c implements memset, memcpy, strlen, strcmp, etc. kprintf.c
+is a kernel printf supporting %c %s %d %u %x %p %%. ports.c wraps inb/outb.
+
+Shell - shell.c runs a read-eval loop: print prompt, read line via keyboard,
+match first word to a command table, call handler. No dynamic allocation in
+the core loop. Commands: help, clear, mem, uptime, echo, color, version,
+reboot, panic_test.
+
+
+Prerequisites
+-------------
+
+Ubuntu / Debian:
+
+  sudo apt update
+  sudo apt install -y \
+      gcc-i686-linux-gnu \
+      binutils \
+      nasm \
+      qemu-system-x86 \
+      grub-pc-bin \
+      xorriso \
+      mtools
+
+  # If your Makefile uses i686-elf-gcc, change it to i686-linux-gnu-gcc
+
+macOS (Homebrew):
+
+  brew install i686-elf-gcc i686-elf-binutils nasm qemu xorriso
+
+Verify your toolchain:
+
+  i686-elf-gcc --version
+  nasm --version
+  qemu-system-i386 --version
+  grub-mkrescue --version
+
+
+Building
+--------
+
+  cd mykernel
+
+  # Compile all sources -> mykernel.bin (ELF)
+  make
+
+  # Wrap in a GRUB-bootable ISO -> mykernel.iso
+  make iso
+
+  # Wipe all object files and outputs
+  make clean
+
+
+Running
+-------
+
+  # Build ISO and launch QEMU in one step
+  make run
+
+  # Run the ISO manually
+  qemu-system-i386 -cdrom mykernel.iso
+
+  # Run the raw ELF binary (QEMU acts as bootloader)
+  qemu-system-i386 -kernel mykernel.bin
+
+  # With 128 MB RAM and serial output
+  qemu-system-i386 -cdrom mykernel.iso -m 128M -serial stdio
+
+Verify the binary before running:
+
+  i686-elf-readelf -h mykernel.bin
+  grub-file --is-x86-multiboot mykernel.bin && echo "multiboot OK"
+  i686-elf-objdump -d mykernel.bin | head -40
+
+
+Debugging with GDB
+------------------
+
+Launch QEMU with GDB stub and freeze CPU at boot:
+
+  qemu-system-i386 -kernel mykernel.bin -s -S
+
+In another terminal, attach GDB:
+
+  gdb mykernel.bin
+  (gdb) target remote :1234
+  (gdb) break kernel_main
+  (gdb) continue
+
+Useful GDB commands:
+
+  info registers          Dump all CPU registers
+  x/10i $eip              Disassemble 10 instructions at EIP
+  x/16xw 0xB8000          Inspect VGA framebuffer
+  break panic             Break on kernel panic
+  set architecture i386   Ensure 32-bit mode
+
+
+Boot Sequence
+-------------
+
+  1. vga_init()        - console first, so kprintf works
+  2. verify magic      - confirm GRUB handshake
+  3. gdt_init()        - flat segment model
+  4. idt_init()        - 256-gate descriptor table
+  5. isr_init()        - install exception stubs 0–31
+  6. irq_init()        - remap PIC, install IRQ stubs 32–47
+  7. pmm_init(mbi)     - parse GRUB memory map
+  8. paging_init()     - identity map 0–4 MB, enable CR0.PG
+  9. kmalloc_init()    - set up kernel heap at 0x400000
+  10. timer_init(100)  - PIT at 100 Hz
+  11. keyboard_init()  - PS/2 driver on IRQ 1
+  12. sti              - interrupts enabled (last)
+       └─ shell_run()  - interactive shell, never returns
+
+
+Memory Layout
+-------------
+
+  0x00000000            BIOS data, real-mode IVT (reserved)
+  0x00100000            kernel load address (1 MB)
+    .text               code
+    .rodata             read-only data
+    .data               initialised globals
+    .bss                uninitialised - stack (16 KB), page directory,
+                        page table, PMM bitmap
+    kernel_end          linker symbol
+  0x00400000            kernel heap base
+  0x00800000            kernel heap ceiling
+
+  Virtual == Physical   0x000000 – 0x3FFFFF    identity-mapped (first 4 MB)
+  Heap pages            0x400000+              mapped on demand by kmalloc
+
+
+Extending the Kernel
+--------------------
+
+  New shell commands   - add a cmd_entry_t to cmds[] in shell.c
+  Process scheduler    - add task_t with saved esp, context-switch on timer IRQ
+  User mode (ring 3)   - add user GDT entry (DPL=3), TSS, iret into ring 3
+  Higher-half kernel   - remap kernel to 0xC0100000 in page directory
+  File system          - add ATA PIO driver, then FAT12/16 or ext2 layer
+  Serial output        - add UART driver (0x3F8, IRQ 4), mirror kprintf to it
+
+
+References
+----------
+
+  OSDev Wiki
+    https://wiki.osdev.org
+
+  Intel 64 and IA-32 Architectures Software Developer Manuals
+    https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
+
+  Multiboot Specification
+    https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
+
+  8259 PIC datasheet
+    https://pdos.csail.mit.edu/6.828/2014/readings/hardware/8259A.pdf
+
+  8253/8254 PIT datasheet
+    https://www.scs.stanford.edu/10wi-cs140/pintos/specs/8254.pdf
+
+  James Molloy's kernel tutorial
+    http://www.jamesmolloy.co.uk/tutorial_html/
+
+
+License
+-------
+
+MIT License. See LICENSE file for details.
