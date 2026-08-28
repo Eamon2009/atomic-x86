@@ -1,62 +1,87 @@
 Atomic-x86
-==================
+==========
 
-This is the source tree for mini-kernel or atomic-x86, a minimal x86 operating system
-kernel written in C and NASM assembly. I build this as aexperiment for my first old PC 
-to learn low-level systems programming.Built without any standard library, operating 
-system support, or external dependencies - just a cross-compiler, an assembler, and metal.
+This is the source for mini-kernel (also called atomic-x86), a small x86
+operating system kernel written in C and NASM assembly. I built this as a
+experiment for my first old PC to exp with low-level systems programming.
+Built without any standard library, OS support, or outside dependencies -
+just a cross-compiler, an assembler, and the metal.
 
 Target: i686 (32-bit x86), Multiboot 1, ELF binary, loaded at physical
 address 0x100000.
-
 
 Overview
 --------
 
 mini-kernel boots via GRUB (Multiboot 1), enters 32-bit protected mode,
-and initialises a complete foundational kernel layer:
+and sets up a complete foundational kernel layer:
 
   Boot    - GRUB multiboot header, stack setup, ISR/IRQ assembly stubs
   CPU     - GDT flat model, IDT with 256 gates, exception + hardware IRQ dispatch
-  Drivers - VGA text output, PS/2 keyboard (IRQ 1), PIT timer at 100 Hz (IRQ 0)
+  Drivers - VGA text output, PS/2 keyboard (IRQ 1), PS/2 mouse (IRQ 12),
+            PIT timer at 100 Hz (IRQ 0), serial port (COM1), ATA disk (PIO)
   Memory  - Bitmap physical frame allocator, identity-mapped paging, kernel heap
-  Library - memset/memcpy/strcmp, kprintf with %c %s %d %u %x %p, port I/O
+  Library - memset/memcpy/strcmp/strncmp, kprintf with %c %s %d %u %x %p,
+            port I/O inlines, random number generator
   Shell   - Interactive command interface - help, mem, uptime, echo, color,
-            reboot and more
+            version, reboot, panic_test, pci, date, shutdown, trace, dev,
+            loopback, ata, mouse
+  PCI     - Scans the PCI bus and lists all devices found
+  Time    - Reads the real-time clock (RTC) from CMOS, tracks uptime
+  Block   - Generic block device layer so disk drivers all look the same
+  DevFS   - Device files under /dev like null, zero, random, ata0, ttyS0
+  ACPI    - Reads the ACPI tables and can shut down the computer properly
+  Net     - Loopback network interface for testing packets
+  Debug   - Stack trace dump (ktrace) and assert macros
 
 The kernel is entirely interrupt-driven after init. After boot it drops into
 an interactive shell - type commands and the kernel responds in real time.
 
+Folder Layout
+-------------
 
-Subsystems
-----------
-
-Boot - boot.asm places the Multiboot 1 magic header (0x1BADB002) so GRUB
-can find it in the first 8 KB. It sets up a 16 KB stack in .bss and calls
-kernel_main(uint32_t magic, multiboot_info_t *mbi). kernel_entry.asm holds
-the ISR and IRQ assembly stubs that save registers and call C handlers.
-
-CPU - gdt.c sets up a flat 4 GB segment model. idt.c installs 256 interrupt
-gates. isr.c handles CPU exceptions (vectors 0–31). irq.c remaps the 8259
-PIC so IRQ 0–15 map to vectors 32-47 and sends EOI after each handler.
-panic.c paints the screen red, dumps registers, and halts on fatal errors.
-
-Drivers - vga.c writes directly to the framebuffer at 0xB8000. keyboard.c
-decodes PS/2 scan codes on IRQ 1 into a ring buffer. timer.c programs the
-PIT at 100 Hz and provides timer_sleep() in milliseconds.
-
-Memory - pmm.c uses a bitmap to track 4 KB physical frames, parsed from the
-GRUB memory map. paging.c identity-maps the first 4 MB and enables paging.
-kmalloc.c provides a bump-pointer + free-list heap from 0x400000 to 0x800000.
-
-Library - string.c implements memset, memcpy, strlen, strcmp, etc. kprintf.c
-is a kernel printf supporting %c %s %d %u %x %p %%. ports.c wraps inb/outb.
-
-Shell - shell.c runs a read-eval loop: print prompt, read line via keyboard,
-match first word to a command table, call handler. No dynamic allocation in
-the core loop. Commands: help, clear, mem, uptime, echo, color, version,
-reboot, panic_test.
-
+  boot/         - boot.asm (multiboot header, stack, calls kernel_main)
+                  kernel_entry.asm (ISR/IRQ assembly stubs)
+  cpu/          - gdt.c, gdt.h, gdt_flush.asm
+                  idt.c, idt.h, idt_flush.asm
+                  isr.c, isr.h (CPU exceptions 0-31)
+                  irq.c, irq.h (PIC remap, hardware IRQs 0-15)
+                  syscall_stub.asm (int 0x80 handler)
+  drivers/      - vga.c/h (text mode framebuffer 0xB8000)
+                  keyboard.c/h (PS/2 keyboard, IRQ 1)
+                  mouse.c/h (PS/2 mouse, IRQ 12)
+                  timer.c/h (PIT 8253/8254 at 100 Hz)
+                  serial.c/h (COM1 UART at 0x3F8)
+                  ata.c/h (ATA primary master, PIO mode LBA28)
+  kernel/       - main.c (init sequence, never returns)
+                  kernel.h (types, macros, port I/O, multiboot struct)
+                  shell.c/h (interactive command shell)
+                  panic.c/h (red screen of death, register dump, halt)
+                  cpp_runtime.c/h (C++ global constructor runner)
+  mm/           - pmm.c/h (bitmap physical memory allocator)
+                  paging.c/h (identity map + on-demand page mapping)
+                  kmalloc.c/h (kernel heap, bump + free list)
+  lib/          - string.c/h (strlen, strcmp, memcpy, memset, strncmp)
+                  kprintf.c/h (kernel printf, writes to VGA)
+                  rand.c/h (simple LCG random number generator)
+  task/         - scheduler.c/h (round-robin task switching)
+                  process.c/h (create and destroy tasks)
+                  context_switch.asm (low-level switch helper)
+  fs/           - vfs.c/h (virtual filesystem layer)
+                  tmpfs.c/h (ramdisk filesystem)
+  sys/          - syscall.c/h (system call table, int 0x80)
+  pci/          - pci.c/h (PCI bus scanner, reads config space)
+  time/         - rtc.c/h (CMOS real-time clock reader)
+                  timekeeper.c/h (tracks boot time and uptime)
+  block/        - block.c/h (generic block device abstraction)
+  dev/          - devfs.c/h (device files: /dev/null, /dev/zero, etc)
+  acpi/         - acpi.c/h (ACPI RSDP parser, shutdown support)
+  net/          - netif.c/h (network interface layer)
+                  loopback.c/h (loopback interface for testing)
+                  ethernet.h (Ethernet frame header)
+  debug/        - ktrace.c/h (stack trace unwinder)
+                  assert.h (ASSERT and ASSERT_MSG macros)
+  scripts/      - build_iso.sh (makes a bootable ISO with GRUB)
 
 Prerequisites
 -------------
@@ -92,11 +117,11 @@ Building
 
   cd mykernel
 
-  # Compile all sources -> mykernel.bin (ELF)
+  # Compile all sources -&gt; mini-kernel.bin (ELF)
   make
 
-  # Wrap in a GRUB-bootable ISO -> mykernel.iso
-  make iso
+  # Wrap in a GRUB-bootable ISO -&gt; mini-kernel.iso
+  ./scripts/build_iso.sh
 
   # Wipe all object files and outputs
   make clean
@@ -105,23 +130,26 @@ Building
 Running
 -------
 
-  # Build ISO and launch QEMU in one step
+  # Build and launch QEMU
   make run
 
   # Run the ISO manually
-  qemu-system-i386 -cdrom mykernel.iso
+  qemu-system-i386 -cdrom mini-kernel.iso
 
   # Run the raw ELF binary (QEMU acts as bootloader)
-  qemu-system-i386 -kernel mykernel.bin
+  qemu-system-i386 -kernel mini-kernel.bin
 
-  # With 128 MB RAM and serial output
-  qemu-system-i386 -cdrom mykernel.iso -m 128M -serial stdio
+  # With 128 MB RAM and serial output to terminal
+  qemu-system-i386 -cdrom mini-kernel.iso -m 128M -serial stdio
+
+  # With mouse support (for testing the PS/2 mouse driver)
+  qemu-system-i386 -cdrom mini-kernel.iso -m 128M -serial stdio -usbdevice mouse
 
 Verify the binary before running:
 
-  i686-elf-readelf -h mykernel.bin
-  grub-file --is-x86-multiboot mykernel.bin && echo "multiboot OK"
-  i686-elf-objdump -d mykernel.bin | head -40
+  i686-elf-readelf -h mini-kernel.bin
+  grub-file --is-x86-multiboot mini-kernel.bin && echo "multiboot OK"
+  i686-elf-objdump -d mini-kernel.bin | head -40
 
 
 Debugging with GDB
@@ -129,11 +157,11 @@ Debugging with GDB
 
 Launch QEMU with GDB stub and freeze CPU at boot:
 
-  qemu-system-i386 -kernel mykernel.bin -s -S
+  qemu-system-i386 -kernel mini-kernel.bin -s -S
 
 In another terminal, attach GDB:
 
-  gdb mykernel.bin
+  gdb mini-kernel.bin
   (gdb) target remote :1234
   (gdb) break kernel_main
   (gdb) continue
@@ -154,14 +182,24 @@ Boot Sequence
   2. verify magic      - confirm GRUB handshake
   3. gdt_init()        - flat segment model
   4. idt_init()        - 256-gate descriptor table
-  5. isr_init()        - install exception stubs 0–31
-  6. irq_init()        - remap PIC, install IRQ stubs 32–47
+  5. isr_init()        - install exception stubs 0-31
+  6. irq_init()        - remap PIC, install IRQ stubs 32-47
   7. pmm_init(mbi)     - parse GRUB memory map
-  8. paging_init()     - identity map 0–4 MB, enable CR0.PG
+  8. paging_init()     - identity map 0-4 MB, enable CR0.PG
   9. kmalloc_init()    - set up kernel heap at 0x400000
   10. timer_init(100)  - PIT at 100 Hz
-  11. keyboard_init()  - PS/2 driver on IRQ 1
-  12. sti              - interrupts enabled (last)
+  11. keyboard_init()  - PS/2 keyboard driver on IRQ 1
+  12. mouse_init()     - PS/2 mouse driver on IRQ 12
+  13. ata_init()       - detect primary master ATA disk
+  14. serial_init()    - setup COM1 serial port
+  15. pci_init()       - scan PCI bus for devices
+  16. timekeeper_init()- read RTC and start uptime counter
+  17. block_init()     - setup block device layer
+  18. devfs_init()     - create /dev/null, /dev/zero, etc
+  19. acpi_init()      - parse ACPI tables for shutdown
+  20. net_init()       - setup loopback network interface
+  21. srand()          - seed random number generator
+  22. sti              - interrupts enabled (last)
        └─ shell_run()  - interactive shell, never returns
 
 
@@ -179,20 +217,43 @@ Memory Layout
   0x00400000            kernel heap base
   0x00800000            kernel heap ceiling
 
-  Virtual == Physical   0x000000 – 0x3FFFFF    identity-mapped (first 4 MB)
+  Virtual == Physical   0x000000 - 0x3FFFFF    identity-mapped (first 4 MB)
   Heap pages            0x400000+              mapped on demand by kmalloc
+
+
+Shell Commands
+--------------
+
+  help          show all commands and what they do
+  clear         wipe the screen
+  mem           show free physical memory in frames, KB and MB
+  uptime        show time since boot in hours:minutes:seconds
+  echo &lt;text&gt;   print text back to the screen
+  color &lt;name&gt;  change text color (white, green, cyan, red, blue, etc)
+  version       show kernel version and build date
+  reboot        reboot the computer via keyboard controller or triple fault
+  panic_test    trigger a test kernel panic (for debugging)
+  pci           list all PCI bus devices found
+  date          show RTC time and uptime in milliseconds
+  shutdown      power off the computer using ACPI
+  trace         print a stack trace of the current call stack
+  dev           list all files under /dev
+  loopback      send a test packet through the loopback interface
+  ata           read sector 0 from the ATA disk and show first 16 bytes
+  mouse         show 10 mouse movement events (move mouse to see output)
 
 
 Extending the Kernel
 --------------------
 
   New shell commands   - add a cmd_entry_t to cmds[] in shell.c
-  Process scheduler    - add task_t with saved esp, context-switch on timer IRQ
+  ELF loader           - add code to read ELF binaries from disk and run them
   User mode (ring 3)   - add user GDT entry (DPL=3), TSS, iret into ring 3
   Higher-half kernel   - remap kernel to 0xC0100000 in page directory
-  File system          - add ATA PIO driver, then FAT12/16 or ext2 layer
-  Serial output        - add UART driver (0x3F8, IRQ 4), mirror kprintf to it
-
+  ext2 filesystem      - add a read-only ext2 driver on top of the block layer
+  Real network card    - add RTL8139 or NE2000 driver for real packets
+  VESA graphics        - switch from text mode to framebuffer graphics
+  USB support          - add UHCI/OHCI controller driver
 
 References
 ----------
