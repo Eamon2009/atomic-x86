@@ -1,11 +1,10 @@
-Helium-x86
+Atomic-x86
 ==================
 
-This is the source tree for mini-kernel or helium-x86, a minimal x86 operating system
-kernel written in C and NASM assembly. I build this as a
-experiment for my first old PC to learn low-level systems programming.
-Built without any standard library, operating system support, or external
-dependencies - just a cross-compiler, an assembler, and metal.
+This is the source tree for mini-kernel or atomic-x86, a minimal x86 operating system
+kernel written in C and NASM assembly. I build this as aexperiment for my first old PC 
+to learn low-level systems programming.Built without any standard library, operating 
+system support, or external dependencies - just a cross-compiler, an assembler, and metal.
 
 Target: i686 (32-bit x86), Multiboot 1, ELF binary, loaded at physical
 address 0x100000.
