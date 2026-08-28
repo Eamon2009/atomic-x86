@@ -1,0 +1,17 @@
+Checks: >
+  -*,
+  bugprone-*,
+  clang-diagnostic-*,
+  misc-*,
+  performance-*,
+  readability-redundant-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-bool-conversion
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '.*'
+
+ExtraArgs:
+  - '-ffreestanding'
+  - '-std=c99'
