@@ -1,0 +1,7 @@
+Boot Subsystem
+--------------
+
+Boot - boot.asm places the Multiboot 1 magic header (0x1BADB002) so GRUB
+can find it in the first 8 KB. It sets up a 16 KB stack in .bss and calls
+kernel_main(uint32_t magic, multiboot_info_t *mbi). kernel_entry.asm holds
+the ISR and IRQ assembly stubs that save registers and call C handlers.
